@@ -32,7 +32,3 @@ python main.py
 - Trains generator and discriminator networks
 - Saves progress images every 5 epochs
 - Generates final samples after training
-
-## Key Lesson
-
-**Image size matching is absolutely critical** - even a 4-pixel mismatch can break GAN training completely.
