@@ -119,8 +119,7 @@ discriminator = Discriminator().to(device)
 # Optimizers - DCGAN best practice: Different learning rates for stability
 # Generator uses standard learning rate
 optimizer_g = optim.Adam(generator.parameters(), lr=lr, betas=(beta1, 0.999))
-# Discriminator uses lower learning rate (lr*0.1) to prevent it from overpowering the generator
-optimizer_d = optim.Adam(discriminator.parameters(), lr=lr*0.1, betas=(beta1, 0.999))
+optimizer_d = optim.Adam(discriminator.parameters(), lr=lr, betas=(beta1, 0.999))
 
 # Loss function for GAN training
 criterion = nn.BCELoss()
