@@ -1,139 +1,124 @@
-#!/usr/bin/env python3
-"""
-Main script for training a GAN on MNIST handwritten digits dataset.
-
-This script implements a Deep Convolutional GAN (DCGAN) that generates realistic
-handwritten digits similar to the MNIST dataset.
-"""
-
 import torch
-import argparse
-from data_loader import get_mnist_dataloader
-from generator import create_generator
-from discriminator import create_discriminator
-from train_utils import GANTrainer
-from visualization import (
-    plot_generated_images,
-    compare_real_fake,
-    generate_digit_interpolation,
-    plot_training_progress,
-    save_model_summary
-)
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import numpy as np
 
+# Hyperparameters
+z_dim = 100
+batch_size = 128
+lr = 0.0002
+beta1 = 0.5
+epochs = 25  # Small number for minimal training
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def parse_arguments():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Train GAN on MNIST dataset')
-    parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training')
-    parser.add_argument('--latent_dim', type=int, default=100, help='Dimension of latent space')
-    parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate')
-    parser.add_argument('--beta1', type=float, default=0.5, help='Beta1 for Adam optimizer')
-    parser.add_argument('--save_interval', type=int, default=10, help='Interval for saving checkpoints')
-    parser.add_argument('--sample_interval', type=int, default=100, help='Interval for generating samples')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use (cuda/cpu)')
+# Data loading (MNIST)
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))  # Normalize to [-1, 1] for Tanh
+])
+dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    return parser.parse_args()
+# Generator
+class Generator(nn.Module):
+    def __init__(self, z_dim=100, channels=1):
+        super(Generator, self).__init__()
+        self.model = nn.Sequential(
+            # Input: batch x z_dim x 1 x 1
+            nn.ConvTranspose2d(z_dim, 128, 7, 1, 0, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+            # 7x7x128
+            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+            # 14x14x64
+            nn.ConvTranspose2d(64, channels, 4, 2, 1, bias=False),
+            nn.Tanh()
+            # 28x28x1
+        )
 
+    def forward(self, z):
+        return self.model(z)
 
-def main():
-    """Main training function"""
-    print("=" * 60)
-    print("MNIST GAN TRAINING SCRIPT")
-    print("=" * 60)
+# Discriminator
+class Discriminator(nn.Module):
+    def __init__(self, channels=1):
+        super(Discriminator, self).__init__()
+        self.model = nn.Sequential(
+            # Input: batch x 1 x 28 x 28
+            nn.Conv2d(channels, 64, 4, 2, 1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            # 14x14x64
+            nn.Conv2d(64, 128, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+            # 7x7x128
+            nn.Conv2d(128, 1, 7, 1, 0, bias=False),
+            nn.Sigmoid()
+            # 1x1x1
+        )
 
-    # Check PyTorch and CUDA setup
-    print(f"PyTorch version: {torch.__version__}")
-    print(f"CUDA available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"CUDA version: {torch.version.cuda}")
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print("-" * 60)
+    def forward(self, x):
+        return self.model(x).view(-1, 1)
 
-    # Parse arguments
-    args = parse_arguments()
+# Initialize models
+generator = Generator(z_dim).to(device)
+discriminator = Discriminator().to(device)
 
-    # Set device
-    if args.device == 'cuda' and not torch.cuda.is_available():
-        print("Warning: CUDA not available, falling back to CPU")
-        args.device = 'cpu'
+# Optimizers
+optimizer_g = optim.Adam(generator.parameters(), lr=lr, betas=(beta1, 0.999))
+optimizer_d = optim.Adam(discriminator.parameters(), lr=lr, betas=(beta1, 0.999))
 
-    # Create data loader
-    print("Loading MNIST dataset...")
-    dataloader = get_mnist_dataloader(batch_size=args.batch_size)
+# Loss
+criterion = nn.BCELoss()
 
-    # Create models
-    print("Creating GAN models...")
-    generator = create_generator(latent_dim=args.latent_dim, device=args.device)
-    discriminator = create_discriminator(device=args.device)
+# Training loop
+for epoch in range(epochs):
+    for i, (real_imgs, _) in enumerate(dataloader):
+        real_imgs = real_imgs.to(device)
+        batch_size = real_imgs.size(0)
 
-    print(f"Generator parameters: {sum(p.numel() for p in generator.parameters()):,}")
-    print(f"Discriminator parameters: {sum(p.numel() for p in discriminator.parameters()):,}")
+        # Train Discriminator
+        optimizer_d.zero_grad()
+        real_labels = torch.ones(batch_size, 1).to(device)
+        fake_labels = torch.zeros(batch_size, 1).to(device)
 
-    # Create trainer with stability improvements
-    trainer = GANTrainer(
-        generator=generator,
-        discriminator=discriminator,
-        device=args.device,
-        lr=args.lr,
-        beta1=args.beta1,
-        label_smoothing=0.1,  # Smooth labels from 1.0/0.0 to 0.9/0.1
-        noise_std=0.1        # Add noise to discriminator inputs
-    )
+        # Real
+        output_real = discriminator(real_imgs)
+        loss_d_real = criterion(output_real, real_labels)
 
-    # Save model summary
-    save_model_summary(generator, discriminator)
+        # Fake
+        z = torch.randn(batch_size, z_dim, 1, 1).to(device)
+        fake_imgs = generator(z)
+        output_fake = discriminator(fake_imgs.detach())
+        loss_d_fake = criterion(output_fake, fake_labels)
 
-    # Train the GAN
-    trainer.train(
-        dataloader=dataloader,
-        num_epochs=args.epochs,
-        latent_dim=args.latent_dim,
-        save_interval=args.save_interval,
-        sample_interval=args.sample_interval
-    )
+        loss_d = loss_d_real + loss_d_fake
+        loss_d.backward()
+        optimizer_d.step()
 
-    # Generate final results
-    print("\nGenerating final results...")
+        # Train Generator
+        optimizer_g.zero_grad()
+        output_g = discriminator(fake_imgs)
+        loss_g = criterion(output_g, real_labels)
+        loss_g.backward()
+        optimizer_g.step()
 
-    # Generate sample images
-    plot_generated_images(
-        generator,
-        args.latent_dim,
-        device=args.device,
-        num_images=16,
-        save_path='generated_images/final_samples.png'
-    )
+    print(f"Epoch [{epoch+1}/{epochs}] Loss_D: {loss_d.item():.4f} Loss_G: {loss_g.item():.4f}")
 
-    # Get a batch of real images for comparison
-    real_images, _ = next(iter(dataloader))
+# Generate samples (after training)
+generator.eval()
+with torch.no_grad():
+    z = torch.randn(16, z_dim, 1, 1).to(device)
+    generated = generator(z).cpu().numpy()
 
-    # Compare real vs fake images
-    compare_real_fake(
-        real_images,
-        generator,
-        args.latent_dim,
-        device=args.device,
-        num_images=8,
-        save_path='generated_images/real_vs_fake_comparison.png'
-    )
-
-    # Generate interpolation between digits
-    generate_digit_interpolation(
-        generator,
-        args.latent_dim,
-        device=args.device,
-        steps=10,
-        save_path='generated_images/interpolation'
-    )
-
-    # Create training progress collage
-    plot_training_progress(save_path='generated_images/training_progress.png')
-
-    print("\nTraining completed successfully!")
-    print("Check the 'generated_images' directory for results.")
-    print("Check the 'checkpoints' directory for saved models.")
-
-
-if __name__ == "__main__":
-    main()
+# Display some generated images (for visualization, in a real env you'd use plt.show())
+fig, axes = plt.subplots(4, 4, figsize=(8, 8))
+for i, ax in enumerate(axes.flatten()):
+    ax.imshow(generated[i][0], cmap='gray')
+    ax.axis('off')
+# plt.show()  # Uncomment to display in your environment
