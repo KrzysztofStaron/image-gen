@@ -125,9 +125,77 @@ def generate_single_digit(generator, digit, device, z_dim, save_path="generated_
     plt.axis('off')
     plt.show()
 
-def concatenate_digits_horizontally(generator, number_string, device, z_dim, save_path="generated_number.png"):
+def calculate_bounding_box(image_tensor, threshold=0.1):
     """
-    Generate multiple digits and concatenate them horizontally to form a number.
+    Calculate the bounding box around the digit content in the image.
+
+    Args:
+        image_tensor: Single channel image tensor of shape (1, 28, 28)
+        threshold: Threshold for determining content vs background (0-1)
+
+    Returns:
+        tuple: (left, right, top, bottom) coordinates of bounding box
+    """
+    # Convert to numpy and remove channel dimension
+    img = image_tensor.squeeze().cpu().numpy()
+
+    # Normalize to 0-1 range if needed
+    if img.max() > 1.0:
+        img = img / 255.0
+
+    # Find rows and columns with content above threshold
+    rows_with_content = np.any(img > threshold, axis=1)
+    cols_with_content = np.any(img > threshold, axis=0)
+
+    # Get bounding box coordinates
+    row_indices = np.where(rows_with_content)[0]
+    col_indices = np.where(cols_with_content)[0]
+
+    if len(row_indices) == 0 or len(col_indices) == 0:
+        # Fallback to full image if no content found
+        return 0, 27, 0, 27
+
+    top = row_indices[0]
+    bottom = row_indices[-1]
+    left = col_indices[0]
+    right = col_indices[-1]
+
+    return left, right, top, bottom
+
+def crop_and_add_margins(image_tensor, margin_y=4):
+    """
+    Crop the digit to its bounding box and add margins.
+
+    Args:
+        image_tensor: Single channel image tensor of shape (1, 28, 28)
+        margin_y: Number of pixels to add as vertical margin around the cropped digit
+
+    Returns:
+        torch.Tensor: Cropped and margined image tensor
+    """
+    left, right, top, bottom = calculate_bounding_box(image_tensor)
+
+    # Crop the image to the bounding box
+    cropped = image_tensor[:, top:bottom+1, left:right+1]
+
+    # Add margins around the cropped image
+    height, width = cropped.shape[1], cropped.shape[2]
+
+    # Create new image with margins
+    new_height = height + 2 * margin_y
+    new_width = width + 2 * margin_y  # Use margin_y for both directions in this function
+
+    # Create black background (normalized to -1 to 1 range for tanh output)
+    margined = torch.full((1, new_height, new_width), -1.0, device=image_tensor.device)
+
+    # Place the cropped digit in the center of the margined area
+    margined[:, margin_y:margin_y+height, margin_y:margin_y+width] = cropped
+
+    return margined
+
+def concatenate_digits_horizontally(generator, number_string, device, z_dim, save_path="generated_number.png", margin_x=2, margin_y=4):
+    """
+    Generate multiple digits, crop them to their content, and concatenate them horizontally with margins.
 
     Args:
         generator: The generator model
@@ -135,6 +203,8 @@ def concatenate_digits_horizontally(generator, number_string, device, z_dim, sav
         device: Device to run on
         z_dim: Dimension of noise vector
         save_path: Path to save the concatenated image
+        margin_x: Horizontal margin in pixels between digits
+        margin_y: Vertical margin in pixels around digits
     """
     if not number_string.isdigit():
         print("Error: Input must contain only digits")
@@ -146,16 +216,43 @@ def concatenate_digits_horizontally(generator, number_string, device, z_dim, sav
 
     print(f"Generating number: {number_string}")
 
-    # Generate each digit
-    digit_tensors = []
+    # Generate each digit and crop to content
+    cropped_digits = []
+    max_height = 0
+
     for digit_char in number_string:
         digit = int(digit_char)
-        print(f"Generating digit {digit}...")
+        print(f"Generating and cropping digit {digit}...")
         digit_tensor = generate_digit_tensor(generator, digit, device, z_dim)
-        digit_tensors.append(digit_tensor)
+        left, right, top, bottom = calculate_bounding_box(digit_tensor)
+
+        # Crop to bounding box only
+        cropped = digit_tensor[:, top:bottom+1, left:right+1]
+        cropped_digits.append(cropped)
+
+        # Track maximum height
+        max_height = max(max_height, cropped.shape[1])
+
+    # Add margins and ensure uniform height
+    margined_digits = []
+    for cropped in cropped_digits:
+        height, width = cropped.shape[1], cropped.shape[2]
+
+        # Create new image with margins and uniform height
+        new_height = max_height + 2 * margin_y
+        new_width = width + 2 * margin_x
+
+        # Create black background (normalized to -1 to 1 range for tanh output)
+        margined = torch.full((1, new_height, new_width), -1.0, device=device)
+
+        # Center the cropped digit vertically
+        height_offset = (new_height - height) // 2
+        margined[:, height_offset:height_offset+height, margin_x:margin_x+width] = cropped
+
+        margined_digits.append(margined)
 
     # Concatenate horizontally (along width dimension)
-    concatenated = torch.cat(digit_tensors, dim=2)  # dim=2 is the width dimension
+    concatenated = torch.cat(margined_digits, dim=2)  # dim=2 is the width dimension
 
     # Save the concatenated image
     save_image(concatenated, save_path, normalize=True)
@@ -163,7 +260,7 @@ def concatenate_digits_horizontally(generator, number_string, device, z_dim, sav
 
     # Display the concatenated image
     img = concatenated.cpu().squeeze().numpy()
-    plt.figure(figsize=(len(number_string) * 3, 3))
+    plt.figure(figsize=(len(number_string) * 2, 3))  # Adjusted for cropped images
     plt.imshow(img, cmap='gray')
     plt.title(f'Generated Number: {number_string}')
     plt.axis('off')
@@ -254,7 +351,7 @@ def main():
                 else:
                     # Multi-digit number
                     save_path = f"generated_number_{user_input}.png"
-                    concatenate_digits_horizontally(generator, user_input, device, z_dim, save_path)
+                    concatenate_digits_horizontally(generator, user_input, device, z_dim, save_path, margin_x=2, margin_y=4)
 
             else:
                 print("Invalid input. Please enter a number, digit (0-9), 'samples X', or 'quit'")
