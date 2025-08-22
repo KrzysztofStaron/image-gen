@@ -75,16 +75,18 @@ def load_generator_weights(generator, weights_path='saved_weights/generator_weig
         print("No generator weights found")
         return False
 
-def generate_single_digit(generator, digit, device, z_dim, save_path="generated_test.png"):
+def generate_digit_tensor(generator, digit, device, z_dim):
     """
-    Generate a single image of a specific digit.
+    Generate a single digit image and return the tensor.
 
     Args:
         generator: The generator model
         digit: The digit to generate (0-9)
         device: Device to run on
         z_dim: Dimension of noise vector
-        save_path: Path to save the generated image
+
+    Returns:
+        torch.Tensor: Generated image tensor
     """
     generator.eval()
     with torch.no_grad():
@@ -95,19 +97,77 @@ def generate_single_digit(generator, digit, device, z_dim, save_path="generated_
         # Generate image
         generated = generator(z, label)
 
-        # Save the generated image
-        save_image(generated[0], save_path, normalize=True)
-        print(f"Generated digit {digit}, saved to {save_path}")
-
-        # Also display the image
-        img = generated[0].cpu().squeeze().numpy()
-        plt.figure(figsize=(3, 3))
-        plt.imshow(img, cmap='gray')
-        plt.title(f'Generated Digit: {digit}')
-        plt.axis('off')
-        plt.show()
-
     generator.train()
+    return generated[0]  # Return the single image tensor
+
+def generate_single_digit(generator, digit, device, z_dim, save_path="generated_test.png"):
+    """
+    Generate a single image of a specific digit and save/display it.
+
+    Args:
+        generator: The generator model
+        digit: The digit to generate (0-9)
+        device: Device to run on
+        z_dim: Dimension of noise vector
+        save_path: Path to save the generated image
+    """
+    generated_tensor = generate_digit_tensor(generator, digit, device, z_dim)
+
+    # Save the generated image
+    save_image(generated_tensor, save_path, normalize=True)
+    print(f"Generated digit {digit}, saved to {save_path}")
+
+    # Also display the image
+    img = generated_tensor.cpu().squeeze().numpy()
+    plt.figure(figsize=(3, 3))
+    plt.imshow(img, cmap='gray')
+    plt.title(f'Generated Digit: {digit}')
+    plt.axis('off')
+    plt.show()
+
+def concatenate_digits_horizontally(generator, number_string, device, z_dim, save_path="generated_number.png"):
+    """
+    Generate multiple digits and concatenate them horizontally to form a number.
+
+    Args:
+        generator: The generator model
+        number_string: String representation of the number (e.g., "123")
+        device: Device to run on
+        z_dim: Dimension of noise vector
+        save_path: Path to save the concatenated image
+    """
+    if not number_string.isdigit():
+        print("Error: Input must contain only digits")
+        return
+
+    if len(number_string) == 0:
+        print("Error: Input cannot be empty")
+        return
+
+    print(f"Generating number: {number_string}")
+
+    # Generate each digit
+    digit_tensors = []
+    for digit_char in number_string:
+        digit = int(digit_char)
+        print(f"Generating digit {digit}...")
+        digit_tensor = generate_digit_tensor(generator, digit, device, z_dim)
+        digit_tensors.append(digit_tensor)
+
+    # Concatenate horizontally (along width dimension)
+    concatenated = torch.cat(digit_tensors, dim=2)  # dim=2 is the width dimension
+
+    # Save the concatenated image
+    save_image(concatenated, save_path, normalize=True)
+    print(f"Generated number '{number_string}', saved to {save_path}")
+
+    # Display the concatenated image
+    img = concatenated.cpu().squeeze().numpy()
+    plt.figure(figsize=(len(number_string) * 3, 3))
+    plt.imshow(img, cmap='gray')
+    plt.title(f'Generated Number: {number_string}')
+    plt.axis('off')
+    plt.show()
 
 def generate_multiple_samples(generator, digit, device, z_dim, num_samples=8, save_path="generated_samples.png"):
     """
@@ -159,13 +219,14 @@ def main():
 
     print("Generator loaded successfully!")
     print("\nCommands:")
-    print("- Enter a digit (0-9) to generate a single image")
+    print("- Enter a number (e.g., '123', '42', '987654') to generate it as concatenated digits")
+    print("- Enter a single digit (0-9) to generate just that digit")
     print("- Enter 'samples X' to generate X samples of a digit (e.g., 'samples 5' for digit 5)")
     print("- Enter 'quit' or 'exit' to quit")
 
     while True:
         try:
-            user_input = input("\nEnter a digit (0-9) or command: ").strip().lower()
+            user_input = input("\nEnter a number, digit, or command: ").strip().lower()
 
             if user_input in ['quit', 'exit', 'q']:
                 print("Goodbye!")
@@ -185,15 +246,18 @@ def main():
                     print("Invalid format. Use 'samples X' where X is a digit 0-9")
 
             elif user_input.isdigit():
-                digit = int(user_input)
-                if 0 <= digit <= 9:
+                if len(user_input) == 1:
+                    # Single digit
+                    digit = int(user_input)
                     save_path = f"generated_digit_{digit}.png"
                     generate_single_digit(generator, digit, device, z_dim, save_path)
                 else:
-                    print("Please enter a digit between 0 and 9")
+                    # Multi-digit number
+                    save_path = f"generated_number_{user_input}.png"
+                    concatenate_digits_horizontally(generator, user_input, device, z_dim, save_path)
 
             else:
-                print("Invalid input. Please enter a digit (0-9), 'samples X', or 'quit'")
+                print("Invalid input. Please enter a number, digit (0-9), 'samples X', or 'quit'")
 
         except KeyboardInterrupt:
             print("\nGoodbye!")
